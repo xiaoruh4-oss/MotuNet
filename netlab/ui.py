@@ -220,9 +220,14 @@ class MainWindow(UpdateWorkflow, SceneWorkflow, QMainWindow):
             self.presets.addItem(item)
         self.presets.currentRowChanged.connect(self.select_preset)
         side.addWidget(self.presets, 1)
-        self.new_button = QPushButton("＋  新建场景")
+        scene_actions = QHBoxLayout()
+        self.new_button = QPushButton("新建场景")
         self.new_button.clicked.connect(lambda: self.new_scenario())
-        side.addWidget(self.new_button)
+        scene_actions.addWidget(self.new_button)
+        self.delete_button = QPushButton("删除场景")
+        self.delete_button.clicked.connect(lambda: self.delete_scenario())
+        scene_actions.addWidget(self.delete_button)
+        side.addLayout(scene_actions)
         transfer = QHBoxLayout()
         self.import_button = QPushButton("导入场景")
         self.import_button.clicked.connect(self.import_config)
@@ -806,6 +811,13 @@ class MainWindow(UpdateWorkflow, SceneWorkflow, QMainWindow):
         self.admin_button.setEnabled(editing)
         self.name_field.setReadOnly(not editing)
         self.new_button.setEnabled(editing)
+        saved_scene = any(row["id"] == getattr(self, "selected_scenario_id", None)
+                          for row in getattr(self, "user_scenarios", []))
+        self.delete_button.setEnabled(editing and saved_scene)
+        self.delete_button.setToolTip(
+            "删除选中的自定义场景，删除前需确认" if editing and saved_scene else
+            "请先停止测试并等待当前操作完成" if not editing else
+            "选择已保存的自定义场景后可删除；内置场景保留")
         self.save_button.setEnabled(editing)
         self.save_as_button.setEnabled(not self.busy and not self.update_busy)
         same_scene = self.is_current_scene_running()
@@ -946,7 +958,7 @@ class MainWindow(UpdateWorkflow, SceneWorkflow, QMainWindow):
         <p><b>延迟</b>：每个数据包增加的单程毫秒数。双向 150 ms 约增加 300 ms 往返时延。<br><b>延迟抖动 ±</b>：在延迟值附近随机增减，可能造成包顺序变化。<br><b>随机丢包</b>：按百分比随机丢弃数据包。<br><b>每方向带宽上限</b>：上下行分别限速，单位 KiB/s；0 表示不限速。<br><b>重复包概率</b>：命中后额外发送一份相同数据包。<br><b>乱序触发概率 / 暂存</b>：暂存命中的包，让后续包先发送。<br><b>完全断网</b>：勾选后，点击“开始测试”即开始计时；“延后断网 N 秒”会先保持网络正常，倒计时结束后自动丢弃匹配流量，并持续“断网持续 M 秒”，随后自动恢复。等待或断网期间都可点击“停止并恢复”。<br><b>断网持续为0</b>：显示“手动停止”，仅在延后断网为0秒时有效。<br><b>普通测试自动恢复</b>：非断网模式下的倒计时；0 表示手动停止。</p>
         <p><b>循环执行</b>：在完全断网选项下勾选，重复“正常联网 N 秒 → 断网 M 秒 → 恢复网络”，直到点击“停止并恢复”。两段时间均需至少 1 秒。顶部显示当前轮次和阶段倒计时，循环开关可随场景保存；默认关闭，执行一次。</p>
         <h3>四、我的场景与皮肤</h3>
-        <p><b>新建场景</b>：输入名称，从正常网络开始创建，调整参数后点击“保存修改”。<br><b>另存为新场景</b>：复制当前全部目标和参数，原场景仍保留。<br><b>保存修改</b>：更新选中的自定义场景。内置场景始终保留，修改后请另存为。名称不可为空、与其他场景重复或超过80字。保存后可从左侧直接选择，重启也会保留。<br><b>导入与导出</b>：用 JSON 文件与同事分享参数；导入后点击保存即可加入场景库。<br><b>皮肤</b>：左下角可切换蓝白、深色、青绿，自动记住选择，不影响正在运行的测试。</p>
+        <p><b>新建场景</b>：输入名称，从正常网络开始创建，调整参数后点击“保存修改”。<br><b>另存为新场景</b>：复制当前全部目标和参数，原场景仍保留。<br><b>保存修改</b>：更新选中的自定义场景。内置场景始终保留，修改后请另存为。名称不可为空、与其他场景重复或超过80字。保存后可从左侧直接选择，重启也会保留。<br><b>删除场景</b>：选中已保存的自定义场景，点击左侧“删除场景”并确认。删除后回到“正常对照”，不会启动测试；内置场景不可删除，测试或更新期间暂不可删除。<br><b>导入与导出</b>：用 JSON 文件与同事分享参数；导入后点击保存即可加入场景库。<br><b>皮肤</b>：左下角可切换蓝白、深色、青绿，自动记住选择，不影响正在运行的测试。</p>
         <h3>五、恢复与记录</h3>
         <p><b>检查更新</b>：启动后自动在后台检查 GitHub 最新版本，也可点击左下角“检查更新”。发现新版本后可选择“下载并更新”或“稍后”。确认更新会停止弱网测试、恢复网络，下载并校验安装包，然后打开安装向导。检查失败不影响正常使用；网络需能访问 GitHub。</p>
         <p>仅处理过滤条件匹配的数据包，不记录包内容。停止、自动恢复、关闭窗口和快捷键 Ctrl + Alt + F12 均会释放拦截句柄。可导出场景配置和测试记录供复盘。</p>

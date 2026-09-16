@@ -11,6 +11,8 @@
 #ifndef ReleaseOutputDir
   #define ReleaseOutputDir "..\deliverables"
 #endif
+#define DriverRelativePath "_internal\vendor\windivert\WinDivert64.sys"
+#define BundledDriverSHA256 GetSHA256OfFile(PayloadDir + "\" + DriverRelativePath)
 
 [Setup]
 AppId={{8B7A7D4C-7D6D-4BE0-9F34-4B7E2D1A9A20}
@@ -58,7 +60,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#PayloadDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "vendor\windivert\WinDivert64.sys"
-Source: "{#PayloadDir}\_internal\vendor\windivert\WinDivert64.sys"; DestDir: "{app}\_internal\vendor\windivert"; Flags: ignoreversion restartreplace
+; An unchanged driver may still be loaded by another application. Do not
+; queue identical bytes for replacement at reboot just because it is locked.
+Source: "{#PayloadDir}\{#DriverRelativePath}"; DestDir: "{app}\_internal\vendor\windivert"; Flags: ignoreversion restartreplace; Check: ShouldInstallDriver
 
 [InstallDelete]
 ; Remove payload files that existed in earlier onedir builds while preserving user data.
@@ -81,6 +85,27 @@ const
 var
   KnownInstallDirs: TStringList;
   ProcessQueryError: String;
+
+function ShouldInstallDriver: Boolean;
+var
+  InstalledPath: String;
+begin
+  Result := True;
+  InstalledPath := ExpandConstant('{app}\{#DriverRelativePath}');
+  if not FileExists(InstalledPath) then
+    exit;
+  try
+    if CompareText(GetSHA256OfFile(InstalledPath), '{#BundledDriverSHA256}') = 0 then begin
+      Log('WinDivert64.sys matches bundled SHA256; skipping driver replacement.');
+      Result := False;
+    end else
+      Log('WinDivert64.sys differs from bundled SHA256; driver update required.');
+  except
+    { A read failure is not evidence that the driver is current. Keep the
+      normal install/retry/restart behavior instead of silently keeping it. }
+    Log('Cannot compare existing WinDivert64.sys: ' + GetExceptionMessage);
+  end;
+end;
 
 function NormalizeInstallDir(const Dir: String): String;
 begin
@@ -260,9 +285,9 @@ begin
         end;
       end;
     end;
-    { Never stop a shared WinDivert service. If another application still
-      holds the driver, the dedicated restartreplace entry schedules its
-      replacement and Inno Setup explicitly asks for a Windows restart. }
+    { Never stop a shared WinDivert service. An identical driver is skipped
+      by ShouldInstallDriver; a genuinely different locked driver retains
+      restartreplace so Setup explicitly reports the required restart. }
     Sleep(500);
   finally
     Ids.Free;

@@ -61,6 +61,11 @@ jobs:
         run: |
           ./tools/build_release.ps1 -Python (Get-Command python).Source -Repository $env:GITHUB_REPOSITORY
 
+      - name: Verify driver replacement without unnecessary restart
+        run: |
+          python tools/test_installer_driver.py
+          if ($LASTEXITCODE -ne 0) { throw "Installer driver regression test failed" }
+
       - name: Smoke test packaged application
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null

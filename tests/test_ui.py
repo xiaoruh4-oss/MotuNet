@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox
 from netlab.config import DEFAULT_CONFIG, PRESETS, validate_config
 from netlab.storage import ConfigStore, AuditLog
 from netlab.ui import APP_NAME, MainWindow
@@ -335,6 +336,149 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.window.presets.item(0).text().splitlines()[0], PRESETS[0]["name"])
         self.window.presets.setCurrentRow(0)
         self.assertEqual(self.window.collect()["name"], PRESETS[0]["name"])
+
+    def test_delete_cancel_uses_saved_name_and_preserves_unsaved_draft(self):
+        self.window.name_field.setText("已保存的原名称")
+        self.window.save_config()
+        scene_id = self.window.selected_scenario_id
+        saved = self.window.store.list_scenarios()
+        self.window.name_field.setText("尚未保存的改名")
+        self.window.numbers["loss_pct"].setValue(27)
+        draft = self.window.collect()
+        with patch.object(self.window, "_confirm_delete_scenario", return_value=False) as confirm:
+            self.window.delete_scenario()
+        confirm.assert_called_once_with("已保存的原名称")
+        self.assertEqual(self.window.selected_scenario_id, scene_id)
+        self.assertEqual(self.window.collect(), draft)
+        self.assertEqual(self.window.store.list_scenarios(), saved)
+        self.assertTrue(self.window.delete_button.isEnabled())
+        self.assertEqual(self.engine.calls, [])
+
+    def test_delete_confirmation_defaults_to_cancel_and_plain_text(self):
+        observed = []
+
+        def dismiss(box):
+            observed.append(box.text())
+            self.assertEqual(box.textFormat(), Qt.TextFormat.PlainText)
+            self.assertEqual(box.standardButton(box.defaultButton()), QMessageBox.StandardButton.Cancel)
+            self.assertEqual(box.standardButton(box.escapeButton()), QMessageBox.StandardButton.Cancel)
+            self.assertEqual(box.button(QMessageBox.StandardButton.Yes).text(), "删除场景")
+            return QMessageBox.StandardButton.Cancel
+
+        with patch("netlab.scene_workflow.QMessageBox.exec", new=dismiss):
+            self.assertFalse(self.window._confirm_delete_scenario("<b>用户场景</b>"))
+        self.assertEqual(observed, ["确定删除已保存的场景「<b>用户场景</b>」？"])
+
+    def test_delete_failure_preserves_selection_draft_and_saved_data(self):
+        self.window.name_field.setText("删除失败保留")
+        self.window.save_config()
+        scene_id = self.window.selected_scenario_id
+        saved = self.window.store.list_scenarios()
+        current = self.window.store.load()
+        self.window.name_field.setText("未保存修改")
+        draft = self.window.collect()
+        with patch.object(self.window, "_confirm_delete_scenario", return_value=True), \
+                patch.object(self.window.store, "delete_scenario", side_effect=ValueError("删除失败：没有权限")), \
+                patch.object(self.window, "error") as error:
+            self.window.delete_scenario()
+        error.assert_called_once_with("删除失败：没有权限")
+        self.assertEqual(self.window.selected_scenario_id, scene_id)
+        self.assertEqual(self.window.collect(), draft)
+        self.assertEqual(self.window.store.list_scenarios(), saved)
+        self.assertEqual(self.window.store.load(), current)
+        self.assertEqual(self.engine.calls, [])
+
+    def test_delete_last_scene_returns_to_normal_and_persists_without_starting(self):
+        self.window.load_form(dict(DEFAULT_CONFIG, name="最后一个循环场景", scope="endpoint",
+                                   host="192.0.2.25", ports="9000", blackout=True,
+                                   start_delay_s=2, blackout_duration_s=3, blackout_loop=True))
+        self.window.save_config()
+        scene_id = self.window.selected_scenario_id
+        self.window.name_field.setText("无效草稿不应阻止删除")
+        self.window.host.setText("not a valid host ???")
+        with patch.object(self.window, "_confirm_delete_scenario", return_value=True):
+            self.window.delete_scenario()
+        normal = validate_config(self.window.collect())
+        self.assertEqual(normal["name"], "正常对照")
+        self.assertEqual(normal["host"], "192.0.2.25")
+        self.assertEqual(normal["ports"], "9000")
+        self.assertFalse(normal["blackout"])
+        self.assertFalse(normal["blackout_loop"])
+        for key in ("delay_ms", "jitter_ms", "loss_pct", "bandwidth_kbps", "duplicate_pct", "reorder_pct"):
+            self.assertEqual(normal[key], 0)
+        self.assertIsNone(self.window.selected_scenario_id)
+        self.assertEqual(self.window.presets.count(), len(PRESETS))
+        self.assertFalse(self.window.delete_button.isEnabled())
+        self.assertEqual(ConfigStore(self.temp.name).list_scenarios(), [])
+        self.assertEqual(ConfigStore(self.temp.name).load(), normal)
+        self.assertEqual(self.engine.calls, [])
+        records = [json.loads(line) for line in self.window.audit.path.read_text(encoding="utf-8").splitlines()]
+        deleted = [row for row in records if row["event"] == "scenario_deleted"]
+        self.assertEqual(len(deleted), 1)
+        self.assertEqual(deleted[0]["scenario_id"], scene_id)
+        reloaded = MainWindow(engine=FakeEngine(), store=ConfigStore(self.temp.name), audit=AuditLog(self.temp.name))
+        try:
+            self.assertEqual(reloaded.collect()["name"], "正常对照")
+            self.assertEqual(reloaded.presets.count(), len(PRESETS))
+            self.assertFalse(reloaded.delete_button.isEnabled())
+            self.assertEqual(reloaded.engine.calls, [])
+        finally:
+            reloaded.close()
+            reloaded.deleteLater()
+
+    def test_builtin_and_imported_draft_cannot_be_deleted(self):
+        self.window.name_field.setText("应当保留的自定义场景")
+        self.window.save_config()
+        saved = self.window.store.list_scenarios()
+        self.window.presets.setCurrentRow(0)
+        with patch.object(self.window, "_confirm_delete_scenario") as confirm:
+            self.assertFalse(self.window.delete_button.isEnabled())
+            self.window.delete_scenario()
+            path = Path(self.temp.name) / "draft.json"
+            self.window.store.export(path, dict(DEFAULT_CONFIG, name="尚未保存的导入草稿"))
+            with patch("netlab.ui.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+                self.window.import_config()
+            self.assertFalse(self.window.delete_button.isEnabled())
+            self.window.delete_scenario()
+            confirm.assert_not_called()
+        self.assertEqual(self.window.store.list_scenarios(), saved)
+        self.assertEqual(self.engine.calls, [])
+
+    def test_delete_is_blocked_while_running_or_busy_or_updating(self):
+        self.window.name_field.setText("繁忙时保留场景")
+        self.window.save_config()
+        saved = self.window.store.list_scenarios()
+        for flag in ("session_active", "busy", "update_busy"):
+            with self.subTest(flag=flag):
+                setattr(self.window, flag, True)
+                self.window.set_running_controls()
+                with patch.object(self.window, "_confirm_delete_scenario") as confirm:
+                    self.assertFalse(self.window.delete_button.isEnabled())
+                    self.window.delete_scenario()
+                    confirm.assert_not_called()
+                self.assertEqual(self.window.store.list_scenarios(), saved)
+                setattr(self.window, flag, False)
+                self.window.set_running_controls()
+                self.assertTrue(self.window.delete_button.isEnabled())
+        self.assertEqual(self.engine.calls, [])
+
+    def test_delete_rechecks_activity_and_selection_after_confirmation(self):
+        self.window.name_field.setText("确认期间保留场景")
+        self.window.save_config()
+        scene_id = self.window.selected_scenario_id
+        saved = self.window.store.list_scenarios()
+        for attribute, value in (("session_active", True), ("busy", True),
+                                 ("update_busy", True), ("selected_scenario_id", None)):
+            with self.subTest(attribute=attribute):
+                def change_state(_name):
+                    setattr(self.window, attribute, value)
+                    return True
+
+                with patch.object(self.window, "_confirm_delete_scenario", side_effect=change_state):
+                    self.window.delete_scenario()
+                self.assertEqual(self.window.store.list_scenarios(), saved)
+                setattr(self.window, attribute, scene_id if attribute == "selected_scenario_id" else False)
+        self.assertEqual(self.engine.calls, [])
 
     def test_import_is_a_draft_and_cannot_overwrite_selected_user_scene(self):
         self.window.name_field.setText("保留的原场景")

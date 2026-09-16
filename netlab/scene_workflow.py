@@ -1,8 +1,9 @@
 """Desktop scene library actions; saving never starts a network test."""
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QInputDialog, QListWidgetItem
+from PySide6.QtWidgets import QInputDialog, QListWidgetItem, QMessageBox
 
 from .config import DEFAULT_CONFIG, PRESETS, validate_config
+from .themes import stylesheet
 
 
 def execution_signature(config):
@@ -171,6 +172,54 @@ class SceneWorkflow:
                       bandwidth_kbps=0, duplicate_pct=0, reorder_pct=0,
                       blackout=False, duration_s=0)
         self._persist_scene(config)
+
+    def _confirm_delete_scenario(self, name):
+        box = QMessageBox(self)
+        box.setWindowTitle("删除场景")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(f"确定删除已保存的场景「{name}」？")
+        box.setInformativeText("删除后无法撤销，当前未保存的修改也会放弃。删除后回到“正常对照”，不会启动测试。")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Yes).setText("删除场景")
+        box.button(QMessageBox.StandardButton.Cancel).setText("取消")
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.setEscapeButton(QMessageBox.StandardButton.Cancel)
+        box.setStyleSheet(stylesheet(self.theme_id) +
+                         "\nQMessageBox QLabel#qt_msgboxex_icon_label { min-width: 0; }")
+        return box.exec() == QMessageBox.StandardButton.Yes
+
+    def delete_scenario(self):
+        if self.busy or self.session_active or self.update_busy:
+            return
+        entry = next((row for row in self.user_scenarios
+                      if row["id"] == self.selected_scenario_id), None)
+        if entry is None or not self._confirm_delete_scenario(entry["config"]["name"]):
+            return
+        # Modal dialogs process events; an update may have started meanwhile.
+        if (self.busy or self.session_active or self.update_busy or
+                self.selected_scenario_id != entry["id"]):
+            return
+        try:
+            self.store.delete_scenario(entry["id"])
+        except (OSError, ValueError) as exc:
+            self.error(str(exc))
+            return
+        self.selected_scenario_id = None
+        self.selected_builtin_index = None
+        self.refresh_scene_library()
+        # Use the saved target, so an invalid unsaved draft cannot prevent
+        # returning to a valid normal-network preset after deletion.
+        self.load_form(entry["config"])
+        normal_index = next(i for i, preset in enumerate(PRESETS) if preset["name"] == "正常对照")
+        self.presets.setCurrentRow(normal_index)
+        try:
+            self.store.save(self.collect())
+        except (OSError, ValueError) as exc:
+            self.error(f"场景已删除，但下次启动的默认配置未更新：{exc}")
+        self.record("scenario_deleted", scenario_id=entry["id"], name=entry["config"]["name"])
+        self.append_log(f"已删除「{entry['config']['name']}」，已回到正常对照；未启动测试。")
+        self.scene_form_changed()
 
     def save_as_scenario(self):
         if self.busy:

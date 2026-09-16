@@ -103,6 +103,41 @@ class ScenarioStoreTests(unittest.TestCase):
             self.assertEqual(store.load(), saved_config)
             self.assertEqual(store.list_scenarios(), [custom])
 
+    def test_delete_removes_only_selected_scene_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = ConfigStore(root)
+            original_presets = deepcopy(PRESETS)
+            removed = store.save_scenario(self.scenario("删除此场景"))
+            retained = store.save_scenario(self.scenario("保留此场景"))
+            current = store.save(retained["config"])
+            store.delete_scenario(removed["id"])
+            self.assertFalse(Path(root, "scenarios", removed["id"] + ".json").exists())
+            self.assertEqual(ConfigStore(root).list_scenarios(), [retained])
+            self.assertEqual(ConfigStore(root).load(), current)
+            self.assertEqual(PRESETS, original_presets)
+
+    def test_delete_rejects_invalid_and_missing_ids_without_removing_data(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = ConfigStore(root)
+            saved = store.save_scenario(self.scenario("保留场景"))
+            store.save(saved["config"])
+            original_files = {path: path.read_bytes() for path in Path(root).rglob("*.json")}
+            for value in ("../config", "A" * 32, "0" * 31, "0" * 33, "", None, "f" * 32):
+                with self.subTest(scenario_id=value), self.assertRaises(ValueError):
+                    store.delete_scenario(value)
+                self.assertEqual({path: path.read_bytes() for path in Path(root).rglob("*.json")},
+                                 original_files)
+            self.assertEqual(store.list_scenarios(), [saved])
+
+    def test_delete_permission_failure_preserves_scene(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = ConfigStore(root)
+            saved = store.save_scenario(self.scenario("不能删除的场景"))
+            with patch("netlab.storage.Path.unlink", side_effect=PermissionError("access denied")):
+                with self.assertRaisesRegex(ValueError, "删除自定义场景失败"):
+                    store.delete_scenario(saved["id"])
+            self.assertEqual(ConfigStore(root).list_scenarios(), [saved])
+
 
 if __name__ == "__main__":
     unittest.main()

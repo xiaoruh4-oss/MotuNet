@@ -153,6 +153,17 @@ class ConfigStore:
         result.sort(key=lambda item: (item["config"]["name"].casefold(), item["id"]))
         return result
 
+    def delete_scenario(self, scenario_id: str) -> None:
+        """Delete exactly one saved user scenario; names are never file paths."""
+        scenario_id = self._scenario_id(scenario_id)
+        path = self.scenarios_path / f"{scenario_id}.json"
+        try:
+            path.unlink()
+        except FileNotFoundError as exc:
+            raise ValueError("需要删除的自定义场景不存在") from exc
+        except OSError as exc:
+            raise ValueError(f"删除自定义场景失败：{exc}") from exc
+
     def save_scenario(self, config: Mapping[str, Any], scenario_id: str | None = None) -> dict[str, Any]:
         """Create or explicitly overwrite a user scenario using an atomic write."""
         normalized = self._validate_scenario_config(config)
