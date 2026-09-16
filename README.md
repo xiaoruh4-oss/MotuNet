@@ -28,7 +28,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\tools\build_release.ps1
 ```
 
-安装包位于 `deliverables/MotuNet-0.5.0-Setup-x64.exe`
+安装包位于 `deliverables/MotuNet-0.5.1-Setup-x64.exe`
 
 可直接把安装包发给同事。安装向导显示实际安装目录，可点击“浏览”修改；检测到原安装记录时默认沿用原目录，确认后覆盖升级。完整程序目录位于 `staging/MotuNet`。真实网络测试需先点击“以管理员身份重启”，再点击“开始测试”。
 
