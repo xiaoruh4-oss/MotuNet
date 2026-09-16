@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "config": {
+    "name": "WiFi 不稳定（抖动、突发丢包）",
+    "scope": "all",
+    "protocol": "all",
+    "direction": "both",
+    "host": "",
+    "ports": "",
+    "advanced_filter": "",
+    "delay_ms": 70.0,
+    "jitter_ms": 100.0,
+    "loss_pct": 8.0,
+    "bandwidth_kbps": 0.0,
+    "duplicate_pct": 0.0,
+    "reorder_pct": 3.0,
+    "reorder_ms": 120.0,
+    "duration_s": 60,
+    "blackout": false,
+    "filter": "not impostor and not loopback",
+    "start_delay_s": 0,
+    "blackout_duration_s": 0
+  }
+}

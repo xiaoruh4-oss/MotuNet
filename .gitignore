@@ -1,0 +1,42 @@
+# Byte-compiled / test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# PyInstaller output
+build/
+dist/
+*.spec.bak
+
+# Local runtime data
+*.log
+*.jsonl
+*.local.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Release outputs and machine-specific build tools (uploaded only as Releases)
+.build/
+.tools/
+artifacts/
+deliverables/
+staging/
+build_*/
+dist_*/
+release/
+release_*/
+*.exe
+/*.png
+tools/rename_brand.py
+.env
+.env.*
+*.pem
+*.pfx
+*.key

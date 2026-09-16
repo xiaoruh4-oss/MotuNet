@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "config": {
+    "name": "高延迟交互验证",
+    "scope": "all",
+    "protocol": "all",
+    "direction": "both",
+    "host": "",
+    "ports": "",
+    "advanced_filter": "",
+    "delay_ms": 600.0,
+    "jitter_ms": 80.0,
+    "loss_pct": 0.0,
+    "bandwidth_kbps": 0.0,
+    "duplicate_pct": 0.0,
+    "reorder_pct": 0.0,
+    "reorder_ms": 1.0,
+    "duration_s": 60,
+    "blackout": false,
+    "filter": "not impostor and not loopback",
+    "start_delay_s": 0,
+    "blackout_duration_s": 0
+  }
+}

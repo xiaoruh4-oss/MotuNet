@@ -1,0 +1,11 @@
+* text=auto
+*.py text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.iss text eol=crlf
+*.isl text eol=crlf
+*.dll binary
+*.sys binary
+*.png binary
+*.ico binary
