@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 from netlab.config import DEFAULT_CONFIG, PRESETS, validate_config
 from netlab.storage import ConfigStore, AuditLog
@@ -70,6 +71,40 @@ class DesktopTests(unittest.TestCase):
         self.app.processEvents()
         self.assertFalse(self.window.busy)
 
+    def test_scene_home_hides_case_entry(self):
+        self.window.show()
+        self.app.processEvents()
+        self.assertEqual(self.window.views.currentIndex(), 0)
+        self.assertTrue(self.window.flow_nav.isHidden())
+        self.assertTrue(self.window.home_nav.isChecked())
+
+    def test_loss_setting_reaches_engine_and_runtime_evidence(self):
+        self.window.select_quick_scene(3)
+        self.window.numbers["loss_pct"].setValue(37)
+        with patch("netlab.ui.is_admin", return_value=True):
+            self.window.start_test()
+        self.settle()
+        self.assertEqual(self.engine.config["loss_pct"], 37)
+        self.window.tick()
+        self.assertIn("尚未捕获", self.window.run_banner.text())
+        self.engine.state.update(received=100, loss_dropped=36, dropped=40, overflow_dropped=4)
+        self.window.tick()
+        self.assertIn("设定丢包 37%", self.window.run_banner.text())
+        self.assertIn("36.0%", self.window.run_banner.text())
+        self.assertIn("额外丢弃 4", self.window.run_banner.text())
+
+    def test_web_target_resolves_only_when_starting_and_preserves_domain(self):
+        self.window.scope.setCurrentIndex(self.window.scope.findData("web"))
+        self.window.host.setText("https://game.example.com/play")
+        self.window.ports.setText("443")
+        with patch("netlab.ui.is_admin", return_value=True):
+            self.window.start_test()
+            self.settle()
+        self.assertEqual(self.engine.config["host"], "game.example.com")
+        self.assertEqual(self.window.store.load()["web_ips"], [])
+        self.assertIn("game.example.com", self.engine.config["host"])
+        self.engine.stop()
+
     def test_start_locks_edits_stop_restores_and_audits(self):
         with patch("netlab.ui.is_admin", return_value=True):
             self.window.start_test()
@@ -84,6 +119,119 @@ class DesktopTests(unittest.TestCase):
         records = [json.loads(line) for line in self.window.audit.path.read_text(encoding="utf-8").splitlines()]
         self.assertIn("test_started", [row["event"] for row in records])
         self.assertIn("test_stopped", [row["event"] for row in records])
+
+    def test_quick_scene_card_and_dropdown_select_without_starting(self):
+        self.window.show()
+        self.app.processEvents()
+        QTest.mouseClick(self.window.scene_cards[5], Qt.MouseButton.LeftButton)
+        self.assertEqual(self.window.collect()["name"], "短时断网")
+        self.assertEqual(self.window.quick_scene.currentText(), "短时断网")
+        self.assertIn("断网", self.window.quick_summary.text())
+        self.assertFalse(self.engine.state["running"])
+        self.window.quick_scene.setCurrentIndex(2)
+        self.assertEqual(self.window.collect()["name"], "高延迟")
+        self.assertTrue(self.window.scene_cards[2].isChecked())
+        self.assertFalse(self.window.scene_cards[5].isChecked())
+        self.assertFalse(self.engine.state["running"])
+
+    def test_quick_summary_and_direction_follow_detail_edits(self):
+        self.window.select_quick_scene(2)
+        self.window.numbers["delay_ms"].setValue(725)
+        self.assertIn("725", self.window.quick_summary.text())
+        self.window.quick_down.setChecked(False)
+        self.assertEqual(self.window.direction.currentData(), "outbound")
+        self.window.quick_up.setChecked(False)
+        self.assertTrue(self.window.quick_up.isChecked())
+        self.assertFalse(self.window.quick_down.isChecked())
+        self.window.direction.setCurrentIndex(self.window.direction.findData("both"))
+        self.assertTrue(self.window.quick_up.isChecked() and self.window.quick_down.isChecked())
+
+    def test_quick_scene_can_switch_running_session_and_show_record_page(self):
+        self.window.select_quick_scene(0)
+        with patch("netlab.ui.is_admin", return_value=True):
+            self.window.start_button.click()
+            self.settle()
+            self.window.scene_cards[3].click()
+            self.assertIn("切换并启动", self.window.start_button.text())
+            self.assertIn("轻度弱网", self.window.run_banner.text())
+            self.window.start_button.click()
+            self.settle()
+        self.assertEqual(self.window.session_config["name"], "丢包专项")
+        self.window.show_view(2)
+        self.assertTrue(self.window.record_nav.isChecked())
+        self.assertEqual(self.window.views.currentIndex(), 2)
+        self.window.stop_button.click()
+        self.settle()
+        self.assertFalse(self.engine.state["running"])
+
+    def test_saved_scene_is_selectable_in_quick_dropdown(self):
+        self.window.name_field.setText("登录回归")
+        self.window.save_config()
+        index = len(PRESETS)
+        self.window.select_quick_scene(0)
+        self.window.quick_scene.setCurrentIndex(index)
+        self.assertEqual(self.window.collect()["name"], "登录回归")
+        self.assertEqual(self.window.quick_scene.currentText(), "登录回归")
+
+    def test_guided_case_flow_records_verdict_and_aborts_cleanly(self):
+        with patch("netlab.case_workflow.is_admin", return_value=True), patch("netlab.ui.is_admin", return_value=True):
+            self.window.start_case_flow()
+        self.settle()
+        self.assertIsNotNone(self.window.case_run)
+        self.assertEqual(self.window.case_index, 0)
+        self.assertEqual(self.window.case_run["cases"][0]["result"], "进行中")
+        self.engine.state.update(received=12, sent=12)
+        self.window.case_actual.setPlainText("登录成功，操作可继续。")
+        self.window.case_pass.click()
+        self.settle()
+        self.assertEqual(self.window.case_index, 1)
+        self.assertEqual(self.window.case_run["cases"][0]["result"], "通过")
+        self.assertTrue(self.engine.state["running"])
+        report = self.window.case_report_path.with_suffix(".md")
+        self.assertTrue(report.exists())
+        self.window.stop_case_flow()
+        self.settle()
+        self.assertEqual(self.window.case_run["status"], "已中止")
+        self.assertIn("已中止", report.read_text(encoding="utf-8"))
+
+    def test_business_plan_preview_and_mode_switch(self):
+        self.assertEqual(self.window.case_mode.currentData(), "plan")
+        self.assertEqual(self.window.case_level.currentData(), "smoke")
+        self.assertEqual(len(self.window.case_preview), 3)
+        self.window.case_level.setCurrentIndex(self.window.case_level.findData("standard"))
+        self.assertGreater(len(self.window.case_preview), 3)
+        self.assertTrue(all(case["business_scene_id"] == "login" for case in self.window.case_preview))
+        self.window.case_mode.setCurrentIndex(self.window.case_mode.findData("template"))
+        self.assertEqual(len(self.window.case_preview), 9)
+        self.assertEqual(self.window.case_preview[0]["id"], "WN-01")
+        self.window.case_mode.setCurrentIndex(self.window.case_mode.findData("plan"))
+        self.assertEqual(self.window.case_preview[0]["business_scene_id"], "login")
+
+    def test_case_flow_fits_supported_window_widths(self):
+        self.window.show()
+        self.window.show_view(3)
+        for width, height in ((980, 680), (1320, 900)):
+            with self.subTest(width=width):
+                self.window.resize(width, height)
+                self.app.processEvents()
+                self.assertEqual(self.window.case_flow_scroll.horizontalScrollBar().maximum(), 0)
+                self.assertLessEqual(self.window.case_flow_scroll.widget().width(),
+                                     self.window.case_flow_scroll.viewport().width())
+                self.assertTrue(self.window.case_business_import.isVisible())
+                self.assertTrue(self.window.case_title.isVisible())
+
+    def test_start_button_uses_selected_business_plan(self):
+        self.window.case_system.setText("账号系统")
+        self.window.case_business.setCurrentIndex(self.window.case_business.findData("battle"))
+        with patch("netlab.case_workflow.is_admin", return_value=True), patch("netlab.ui.is_admin", return_value=True):
+            self.window.case_start.click()
+        self.settle()
+        self.assertEqual(self.window.case_run["system_name"], "账号系统")
+        self.assertEqual(self.window.case_run["plan_level"], "smoke")
+        self.assertTrue(all(case["business_scene_id"] == "battle" for case in self.window.case_run["cases"]))
+        self.assertFalse(self.window.case_business.isEnabled())
+        self.window.stop_case_flow()
+        self.settle()
 
     def test_non_admin_does_not_start(self):
         with patch("netlab.ui.is_admin", return_value=False), patch.object(self.window, "error") as error:

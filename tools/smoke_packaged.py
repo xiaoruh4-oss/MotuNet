@@ -1,4 +1,5 @@
 """Launch the packaged app with isolated data, then close its own hidden window."""
+import argparse
 import ctypes
 from ctypes import wintypes
 import json
@@ -39,13 +40,16 @@ def app_window(pid):
     return found[0] if found else None
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--package", type=Path, default=ROOT / "staging" / "MotuNet" / "MotuNet.exe")
+args = parser.parse_args()
 report = {}
 with tempfile.TemporaryDirectory(prefix="motu-release-smoke-") as temporary:
     env = dict(os.environ, LOCALAPPDATA=temporary, QT_QPA_PLATFORM="windows")
     info = subprocess.STARTUPINFO()
     info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     info.wShowWindow = 0
-    process = subprocess.Popen([str(ROOT / "staging" / "MotuNet" / "MotuNet.exe")],
+    process = subprocess.Popen([str(args.package)],
                                env=env, startupinfo=info)
     try:
         window = None

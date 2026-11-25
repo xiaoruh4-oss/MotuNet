@@ -9,9 +9,14 @@ from .themes import stylesheet
 def execution_signature(config):
     """Compare effective traffic settings, excluding names and inactive fields."""
     value = validate_config(config)
+    target = (("web", value["host"], value["ports"], value["protocol"], value["direction"])
+              if value["scope"] == "web" else value["filter"])
     if value["blackout"]:
-        return (value["filter"], True, value["start_delay_s"], value["blackout_duration_s"], value["blackout_loop"])
-    return (value["filter"], False, value["duration_s"], value["delay_ms"],
+        if value["blackout_mode"] == "adapter":
+            return ("adapter", tuple(sorted(value["adapter_ids"])), value["start_delay_s"],
+                    value["blackout_duration_s"])
+        return (target, True, value["start_delay_s"], value["blackout_duration_s"], value["blackout_loop"])
+    return (target, False, value["duration_s"], value["delay_ms"],
             value["jitter_ms"], value["loss_pct"], value["bandwidth_kbps"],
             value["duplicate_pct"], value["reorder_pct"],
             value["reorder_ms"] if value["reorder_pct"] else 0)
@@ -61,6 +66,8 @@ class SceneWorkflow:
                 selected = self.presets.count() - 1
         self.presets.setCurrentRow(selected)
         self.presets.blockSignals(False)
+        if hasattr(self, "refresh_quick_library"):
+            self.refresh_quick_library()
         for message in getattr(self.store, "scenario_errors", []):
             self.append_log(message)
 
@@ -71,7 +78,7 @@ class SceneWorkflow:
             preset = PRESETS[index]
             data = self.collect()
             for key in (*self.numbers, "reorder_ms", "blackout", "duration_s",
-                        "start_delay_s", "blackout_duration_s", "blackout_loop"):
+                        "start_delay_s", "blackout_duration_s", "blackout_loop", "blackout_mode"):
                 data[key] = DEFAULT_CONFIG[key]
             data.update(preset["values"])
             data["name"] = preset["name"]
@@ -127,6 +134,7 @@ class SceneWorkflow:
         if hasattr(self, "scene_hint"):
             self.scene_hint.setText(hint)
         self.name_field.setToolTip(self.name_field.text() + "\n" + hint)
+        self.sync_quick_scene()
         self.set_running_controls()
 
     def suggest_scene_name(self, base):

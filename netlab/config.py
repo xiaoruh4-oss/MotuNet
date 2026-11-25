@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import queue
 import re
+import socket
+import threading
+from urllib.parse import urlparse
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -20,6 +24,10 @@ _BASE_DEFAULTS: dict[str, Any] = {
     "direction": "both",
     "host": "",
     "ports": "",
+    # A web target keeps the hostname for display and resolves it immediately
+    # before a packet session starts.  Resolved addresses are never accepted
+    # from imported files; they are refreshed by resolve_web_config().
+    "web_ips": [],
     "advanced_filter": "",
     "delay_ms": 150.0,
     "jitter_ms": 30.0,
@@ -30,6 +38,9 @@ _BASE_DEFAULTS: dict[str, Any] = {
     "reorder_ms": 100.0,
     "duration_s": 60,
     "blackout": False,
+    # Existing presets/files remain packet-based unless the operator opts in.
+    "blackout_mode": "packet",
+    "adapter_ids": [],
     # For blackout scenarios, optionally wait before dropping traffic and then
     # restore it automatically after this many seconds.
     "start_delay_s": 0,
@@ -41,6 +52,25 @@ _BASE_DEFAULTS: dict[str, Any] = {
 def _q(value: str) -> str:
     """Quote an address for WinDivert without introducing shell syntax."""
     return value
+
+
+def normalize_adapter_ids(value: Any) -> list[str]:
+    """Accept only literal Windows interface GUIDs, never shell/name fragments."""
+    if not isinstance(value, list) or len(value) > 16:
+        raise ValueError("网卡列表必须是最多16项的 GUID 数组")
+    result: list[str] = []
+    pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("网卡标识必须是 GUID 文本")
+        literal = item[1:-1] if item.startswith("{") and item.endswith("}") else item
+        if not re.fullmatch(pattern, literal):
+            raise ValueError("网卡标识必须是完整 GUID，不能使用网卡名称或命令")
+        normalized = literal.upper()
+        if normalized in result:
+            raise ValueError("网卡列表不能包含重复 GUID")
+        result.append(normalized)
+    return result
 
 
 def _port_values(value: Any) -> list[int]:
@@ -84,6 +114,105 @@ def _direction_clause(direction: str) -> str:
     return {"inbound": "inbound", "outbound": "outbound", "both": ""}[direction]
 
 
+def _web_addresses(values: Any) -> list[str]:
+    """Accept only IP text, never integers, scoped addresses or filter fragments."""
+    if not isinstance(values, list):
+        raise ValueError("网页解析地址必须是数组")
+    result = []
+    for value in values:
+        if not isinstance(value, str) or not value or "%" in value:
+            raise ValueError("网页解析地址必须是纯 IPv4 或 IPv6 文本")
+        try:
+            text = str(ipaddress.ip_address(value))
+        except ValueError as exc:
+            raise ValueError("网页解析地址必须是纯 IPv4 或 IPv6 文本") from exc
+        if text not in result:
+            result.append(text)
+    if len(result) > 64:
+        raise ValueError("网页解析地址超过64个，请缩小测试目标，不能只测试部分解析结果")
+    return result
+
+
+def _web_host(value: str) -> tuple[str, int]:
+    """Normalize a URL without retaining paths, credentials or arbitrary code."""
+    if not value or any(ch.isspace() or ord(ch) < 32 for ch in value) or "\\" in value:
+        raise ValueError("网页地址必须是域名或 http(s)/ws(s) URL，不能包含空白字符")
+    # A previously normalized IPv6 host has no URL brackets or scheme.
+    if "://" not in value:
+        try:
+            literal = ipaddress.ip_address(value)
+        except ValueError:
+            pass
+        else:
+            if "%" in value:
+                raise ValueError("网页地址不能包含 IPv6 区域标识")
+            return str(literal), 443
+    try:
+        parsed = urlparse(value if "://" in value else "https://" + value)
+        if parsed.scheme not in ("http", "https", "ws", "wss"):
+            raise ValueError("网页地址只支持 http、https、ws 或 wss")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("网页地址不能包含用户名或密码，请只填写域名和端口")
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("网页地址或端口无效：" + str(exc)) from exc
+    if not hostname or "%" in hostname or len(hostname) > 253:
+        raise ValueError("网页地址中的域名或 IP 格式无效")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        hostname = hostname[:-1] if hostname.endswith(".") else hostname
+        labels = hostname.split(".")
+        if any(not label or len(label) > 63 or
+               not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
+               for label in labels):
+            raise ValueError("网页地址中的域名格式无效")
+        hostname = hostname.lower()
+    else:
+        hostname = str(address)
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("网页端口必须为1至65535")
+    return hostname, port if port is not None else (80 if parsed.scheme in ("http", "ws") else 443)
+
+
+def _web_filter(data: Mapping[str, Any], protocol: str, direction: str, ports: list[int]) -> str:
+    addresses = _web_addresses(data.get("web_ips", []))
+    if not addresses:
+        # Importing/saving drafts is offline.  This contradiction can never
+        # accidentally capture packets before the startup resolver succeeds.
+        return "not impostor and ip.DstAddr == 0.0.0.0 and ip.DstAddr != 0.0.0.0"
+    groups = {True: [], False: []}
+    for value in addresses:
+        address = ipaddress.ip_address(value)
+        groups[address.is_loopback].append(("ip" if address.version == 4 else "ipv6", value))
+
+    # Match the server endpoint as a pair.  A separate IP clause and a
+    # separate port clause creates a cross-product that can catch another
+    # service's port on the same resolved address.  For outbound traffic the
+    # server is the destination; for inbound traffic it is the source.  Windows
+    # reports loopback packets as outbound in WinDivert, so loopback keeps the
+    # outbound guard while still using Src/Dst to distinguish the two halves.
+    if not ports:
+        raise ValueError("网页目标需要服务器端口，留空时请使用 URL 默认端口")
+    protocols = [protocol] if protocol in ("tcp", "udp") else ["tcp", "udp"]
+    branches = []
+    for local, targets in groups.items():
+        if not targets:
+            continue
+        for selected_direction, side in (("outbound", "Dst"), ("inbound", "Src")):
+            if direction not in ("both", selected_direction):
+                continue
+            address_terms = [f"{field}.{side}Addr == {address}" for field, address in targets]
+            port_terms = [f"{proto}.{side}Port == {port}" for proto in protocols for port in ports]
+            clauses = (["loopback", "outbound"] if local else ["not loopback", selected_direction])
+            clauses += ["(" + " or ".join(address_terms) + ")", "(" + " or ".join(port_terms) + ")"]
+            branches.append("(" + " and ".join(clauses) + ")")
+    if not branches:
+        raise ValueError("网页目标没有可用的方向匹配条件")
+    return "not impostor and (" + " or ".join(branches) + ")"
+
+
 def build_filter(data: Mapping[str, Any]) -> str:
     """Compile the safe subset of a scenario into a WinDivert expression."""
     scope = data.get("scope", "all")
@@ -91,6 +220,9 @@ def build_filter(data: Mapping[str, Any]) -> str:
     direction = data.get("direction", "both")
     host = data.get("host", "")
     ports = _port_values(data.get("ports", ""))
+
+    if scope == "web":
+        return _web_filter(data, protocol, direction, ports)
 
     if scope == "advanced":
         advanced = str(data.get("advanced_filter", "")).strip()
@@ -139,6 +271,9 @@ def validate_config(data: Mapping[str, Any]) -> dict[str, Any]:
 
     cfg = deepcopy(_BASE_DEFAULTS)
     cfg.update({key: data[key] for key in _BASE_DEFAULTS if key in data})
+    if cfg["blackout_mode"] not in ("packet", "adapter"):
+        raise ValueError("断网模式必须是 packet 或 adapter")
+    cfg["adapter_ids"] = normalize_adapter_ids(cfg["adapter_ids"])
     # Before blackout got its own duration field, duration_s controlled the
     # outage.  Migrate that value (including 0 for manual stop) when importing
     # an older scenario, instead of silently replacing it with the new default.
@@ -149,7 +284,7 @@ def validate_config(data: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("场景名称不能为空，且必须是文本")
     if len(cfg["name"]) > 80:
         raise ValueError("场景名称不能超过80个字符")
-    for key, values in (("scope", {"all", "endpoint", "loopback", "advanced"}),
+    for key, values in (("scope", {"all", "endpoint", "web", "loopback", "advanced"}),
                         ("protocol", {"all", "tcp", "udp"}),
                         ("direction", {"both", "inbound", "outbound"})):
         if not isinstance(cfg[key], str) or cfg[key] not in values:
@@ -157,17 +292,28 @@ def validate_config(data: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(cfg["host"], str):
         raise ValueError("目标地址必须是IPv4或IPv6字面量")
     cfg["host"] = cfg["host"].strip()
+    cfg["web_ips"] = _web_addresses(cfg["web_ips"])
     if cfg["host"]:
-        try:
-            ipaddress.ip_address(cfg["host"])
-        except ValueError as exc:
-            raise ValueError("目标地址必须是IPv4或IPv6字面量") from exc
-        if "%" in cfg["host"]:
-            raise ValueError("目标地址不能包含IPv6区域标识")
+        if cfg["scope"] == "web":
+            cfg["host"], default_port = _web_host(cfg["host"])
+            if not isinstance(cfg["ports"], str):
+                raise ValueError("端口必须是逗号分隔的字符串")
+            cfg["ports"] = cfg["ports"].strip()
+            if not cfg["ports"]:
+                cfg["ports"] = str(default_port)
+        else:
+            try:
+                ipaddress.ip_address(cfg["host"])
+            except ValueError as exc:
+                raise ValueError("目标地址必须是IPv4或IPv6字面量") from exc
+            if "%" in cfg["host"]:
+                raise ValueError("目标地址不能包含IPv6区域标识")
     cfg["ports"] = ",".join(str(p) for p in _port_values(cfg["ports"]))
     if not isinstance(cfg["advanced_filter"], str):
         raise ValueError("高级过滤表达式必须是文本")
     cfg["advanced_filter"] = cfg["advanced_filter"].strip()
+    if cfg["scope"] == "web" and not cfg["host"]:
+        raise ValueError("网页作用域必须填写域名或网页地址")
     if cfg["scope"] == "endpoint" and not cfg["host"] and not cfg["ports"]:
         raise ValueError("端点作用域至少需要填写目标地址或端口")
     if cfg["scope"] == "advanced" and not cfg["advanced_filter"]:
@@ -197,6 +343,17 @@ def validate_config(data: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("断网标记必须是布尔值")
     if not isinstance(cfg["blackout_loop"], bool):
         raise ValueError("循环断网标记必须是布尔值")
+    if cfg["blackout"] and cfg["blackout_mode"] == "adapter":
+        if (cfg["scope"] != "all" or cfg["protocol"] != "all" or cfg["direction"] != "both"
+                or cfg["host"] or cfg["ports"] or cfg["advanced_filter"]):
+            raise ValueError("网卡断网影响该网卡全部流量，不能限定 IP、端口、协议或方向")
+        if cfg["blackout_loop"]:
+            raise ValueError("网卡断网暂不支持循环执行")
+        if not 1 <= cfg["blackout_duration_s"] <= 300:
+            raise ValueError("网卡断网持续时间必须为1至300秒，并自动恢复")
+        # Saving an empty list is useful for portable drafts; the adapter
+        # engine additionally requires an explicit non-empty local selection.
+        cfg["duration_s"] = cfg["blackout_duration_s"]
     if cfg["blackout_loop"]:
         if not cfg["blackout"]:
             raise ValueError("循环断网必须先启用完全断网")
@@ -214,6 +371,52 @@ def validate_config(data: Mapping[str, Any]) -> dict[str, Any]:
     if "\x00" in cfg["filter"]:
         raise ValueError("过滤表达式不能包含空字符")
     return cfg
+
+
+def _resolve_web_dns(host: str, *, timeout: float = 8.0):
+    """Bound the caller's wait; a stuck OS resolver cannot hold the UI job forever."""
+    completed = queue.Queue(maxsize=1)
+
+    def resolve():
+        try:
+            completed.put((socket.getaddrinfo(host, None, type=socket.SOCK_STREAM), None))
+        except Exception as exc:
+            completed.put((None, exc))
+
+    threading.Thread(target=resolve, name="Motu-web-dns", daemon=True).start()
+    try:
+        infos, error = completed.get(timeout=timeout)
+    except queue.Empty as exc:
+        raise ValueError(f"解析网页域名 {host} 超过8秒，请检查域名和网络后重试") from exc
+    if error:
+        raise ValueError(f"无法解析网页域名 {host}：{error}") from error
+    return infos
+
+
+def resolve_web_config(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve a web hostname immediately before starting packet capture."""
+    cfg = validate_config(data)
+    if cfg.get("scope") != "web":
+        return cfg
+    try:
+        literal = ipaddress.ip_address(cfg["host"])
+    except ValueError:
+        infos = _resolve_web_dns(cfg["host"])
+    else:
+        cfg["web_ips"] = [str(literal)]
+        return validate_config(cfg)
+    addresses = []
+    for item in infos:
+        try:
+            value = str(ipaddress.ip_address(item[4][0]))
+        except (ValueError, IndexError, TypeError):
+            continue
+        if value not in addresses:
+            addresses.append(value)
+    if not addresses:
+        raise ValueError(f"网页域名 {cfg['host']} 没有解析到 IP")
+    cfg["web_ips"] = _web_addresses(addresses)
+    return validate_config(cfg)
 
 
 DEFAULT_CONFIG: dict[str, Any] = validate_config(_BASE_DEFAULTS)

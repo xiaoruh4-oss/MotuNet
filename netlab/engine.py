@@ -213,6 +213,7 @@ class Engine:
         return {"running": False, "phase": "idle", "cycle": 0, "wait_remaining": 0.0,
                 "active_elapsed": 0.0, "active_remaining": None,
                 "received": 0, "sent": 0, "dropped": 0,
+                "loss_dropped": 0, "blackout_dropped": 0, "overflow_dropped": 0,
                 "duplicated": 0, "reordered": 0, "queued": 0,
                 "bytes_received": 0, "bytes_sent": 0, "errors": 0,
                 "error": None, "elapsed": 0.0}
@@ -232,6 +233,9 @@ class Engine:
         if not isinstance(config, dict):
             raise ValueError("config must be a dict")
         cfg = dict(config)
+        if cfg.get("scope") == "web":
+            from .config import resolve_web_config
+            cfg = resolve_web_config(cfg)
         # Keep track of whether the new blackout fields were supplied.  Older
         # callers only provided ``blackout`` and ``duration_s``; in that form
         # the regular duration remains the active blackout duration.
@@ -276,6 +280,8 @@ class Engine:
                 raise RuntimeError("engine already running")
             self._config = cfg
             self._stats = self._new_stats()
+            if cfg.get("scope") == "web":
+                self._stats["web_target"] = {key: cfg[key] for key in ("host", "ports", "web_ips", "filter")}
             self._heap.clear(); self._queued_bytes = 0; self._seq = 0
             self._rate_next = {False: 0.0, True: 0.0}
             self._stop_event.clear(); self._closed = False
@@ -492,7 +498,9 @@ class Engine:
     def _process_packet(self, packet: bytes, address: bytes):
         cfg = self._config
         if cfg["blackout"] or self._chance(cfg["loss_pct"]):
-            with self._condition: self._stats["dropped"] += 1
+            with self._condition:
+                self._stats["dropped"] += 1
+                self._stats["blackout_dropped" if cfg["blackout"] else "loss_dropped"] += 1
             return
         outbound = _address_flag(address, _OUTBOUND_BIT)
         base = self._clock() + max(0.0, cfg["delay_ms"] + self._rng.uniform(-cfg["jitter_ms"], cfg["jitter_ms"])) / 1000.0
@@ -509,7 +517,9 @@ class Engine:
             if self._stop_event.is_set() or not self._stats["running"]:
                 self._stats["dropped"] += 1; return
             if len(self._heap) >= self.max_queue or self._queued_bytes + len(packet) > self.max_queue_bytes:
-                self._stats["dropped"] += 1; return
+                self._stats["dropped"] += 1
+                self._stats["overflow_dropped"] += 1
+                return
             rate = self._config.get("bandwidth_kbps", 0.0)
             if rate > 0:
                 ready = max(ready, self._rate_next[outbound])

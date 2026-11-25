@@ -1,4 +1,5 @@
 import unittest,time,threading,ctypes,queue
+from unittest.mock import patch
 from netlab.engine import Engine,validate_filter,_WinDivertTransport
 from netlab.config import DEFAULT_CONFIG, PRESETS, validate_config
 class T:
@@ -21,6 +22,20 @@ def wait_for(pred, timeout=1):
   time.sleep(.005)
  return pred()
 class Test(unittest.TestCase):
+ def test_web_scope_resolves_before_opening_capture(self):
+  t=T(); e=Engine('.',transport=t)
+  resolved={'scope':'web','host':'game.example.com','ports':'443','web_ips':['203.0.113.8'],
+            'filter':'not impostor and not loopback and tcp and (ip.SrcAddr == 203.0.113.8 or ip.DstAddr == 203.0.113.8) and (tcp.SrcPort == 443 or tcp.DstPort == 443)',
+            'blackout':False}
+  with patch('netlab.config.resolve_web_config', return_value=resolved) as resolve:
+   e.start({'scope':'web','host':'game.example.com','ports':'443'})
+  try:
+   resolve.assert_called_once()
+   self.assertIn('203.0.113.8', t.e)
+   self.assertIn('tcp.DstPort == 443', t.e)
+  finally:
+   e.stop()
+
  def test_fake_compile_filter_abi(self):
   class Fn:
    def __init__(self): self.argtypes=None; self.restype=None; self.args=None

@@ -12,6 +12,8 @@ dist/
 *.spec.bak
 
 # Local runtime data
+.localdata/
+.tmp-*/
 *.log
 *.jsonl
 *.local.json

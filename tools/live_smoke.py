@@ -36,6 +36,9 @@ def run_case(name, opts, dll_dir):
         except Exception as exc: error = error or str(exc)
         port_sock.close()
     ok = (len(received)==opts.get("expect",1)) if opts.get("expect") is not None else bool(received)
+    ok = ok and error is None and stats.get("received", 0) > 0 and not stats.get("errors", 0)
+    if opts.get("loss_pct") == 100:
+        ok = ok and stats.get("dropped", 0) > 0
     if opts.get("min_delay") is not None: ok = ok and bool(received) and received[0] >= opts["min_delay"]
     return {"name":name,"ok":ok,"port":port,"received":len(received),"latencies_s":received,"stats":stats,"error":error}
 

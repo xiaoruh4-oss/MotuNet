@@ -8,15 +8,26 @@ THEMES = {
 }
 def stylesheet(theme="blue"):
     p = dict(THEMES.get(theme, THEMES["blue"]))
+    p.update({
+        "orange_bg": "#4c342b" if theme == "dark" else "#fff0e7",
+        "green_bg": "#234b3f" if theme == "dark" else "#e4f5ed",
+        "violet_bg": "#41365a" if theme == "dark" else "#f0eaff",
+        "rose_bg": "#4c3041" if theme == "dark" else "#ffeaf0",
+        "orange_text": "#ffad77" if theme == "dark" else "#db6c27",
+        "green_text": "#81d9b1" if theme == "dark" else "#17805a",
+        "violet_text": "#c5a9ff" if theme == "dark" else "#7653c4",
+        "rose_text": "#ff9fc0" if theme == "dark" else "#c44b73",
+    })
     icon_tone = "dark" if theme == "dark" else "light"
     p["up_icon"] = (resource_dir() / "assets" / "ui" / f"chevron-up-{icon_tone}.svg").as_posix()
     p["down_icon"] = (resource_dir() / "assets" / "ui" / f"chevron-down-{icon_tone}.svg").as_posix()
+    p["check_icon"] = (resource_dir() / "assets" / "ui" / "check-white.svg").as_posix()
     return """
 QWidget {{ color: {text}; font-family: 'Microsoft YaHei UI', 'Segoe UI Symbol'; font-size: 13px; }}
 QMainWindow, QDialog, QWidget#root {{ background: {bg}; }}
 QFrame#sidebar {{ background: {side}; border-right: 1px solid {border}; }}
-QFrame#card {{ background: {surface}; border: 1px solid {border}; border-radius: 10px; }}
-QFrame#control_card {{ background: {soft}; border: 1px solid {border}; border-radius: 10px; }}
+QFrame#card {{ background: {surface}; border: 1px solid {border}; border-radius: 8px; }}
+QFrame#control_card {{ background: {soft}; border: 1px solid {border}; border-radius: 8px; }}
 QFrame#condition_card {{ background: {soft}; border: 1px solid {border}; border-radius: 8px; }}
 QLabel#title {{ font-size: 27px; font-weight: 700; color: {text}; }}
 QLabel#brand {{ font-size: 23px; font-weight: 700; }}
@@ -33,16 +44,36 @@ QLabel#run_banner[active="true"] {{ color: {warning}; background: {warning_bg}; 
 QPushButton {{ color: {text}; background: {surface}; border: 1px solid {border}; border-radius: 6px; padding: 8px 12px; }}
 QPushButton:hover {{ background: {selected}; border-color: {accent}; }}
 QPushButton:disabled {{ color: {disabled_text}; background: {disabled}; border-color: {border}; }}
+QPushButton#nav {{ background: transparent; border: 1px solid transparent; text-align: left; font-size: 16px; font-weight: 600; padding: 10px 20px; }}
+QPushButton#nav:hover {{ background: {selected}; }}
+QPushButton#nav:checked {{ background: {selected}; color: {accent}; border-color: {border}; }}
+QPushButton#scenario_card {{ background: {surface}; border: 1px solid {border}; border-radius: 8px; padding: 0; text-align: left; }}
+QPushButton#scenario_card:hover {{ background: {soft}; border-color: {accent}; }}
+QPushButton#scenario_card:checked {{ background: {selected}; border: 2px solid {accent}; }}
+QPushButton#scenario_card:disabled {{ background: {disabled}; border-color: {border}; }}
+QPushButton#scenario_card QLabel#card_title {{ background: transparent; border: none; font-size: 17px; font-weight: 700; color: {text}; }}
+QPushButton#scenario_card QLabel#card_description {{ background: transparent; border: none; font-size: 12px; color: {muted}; }}
+QPushButton#scenario_card QLabel#card_chevron {{ background: transparent; border: none; color: {muted}; font-size: 25px; }}
+QLabel#card_icon {{ background: {selected}; color: {accent}; border-radius: 8px; border: none; font-size: 25px; font-weight: 700; }}
+QLabel#card_icon[tone="orange"] {{ background: {orange_bg}; color: {orange_text}; }}
+QLabel#card_icon[tone="green"] {{ background: {green_bg}; color: {green_text}; }}
+QLabel#card_icon[tone="violet"] {{ background: {violet_bg}; color: {violet_text}; }}
+QLabel#card_icon[tone="rose"] {{ background: {rose_bg}; color: {rose_text}; }}
 QPushButton#start, QPushButton#primary {{ background: {accent}; color: white; border: 1px solid {accent}; font-weight: 700; }}
-QPushButton#start {{ font-size: 16px; padding: 11px 18px; }}
+QPushButton#start {{ font-size: 16px; padding: 13px 22px; min-width: 148px; }}
 QPushButton#start:hover, QPushButton#primary:hover {{ background: {hover}; }}
-QPushButton#stop {{ background: {danger}; color: white; border: 1px solid {danger}; font-weight: 700; padding: 12px 15px; }}
+QPushButton#stop {{ background: {danger}; color: white; border: 1px solid {danger}; font-weight: 700; padding: 10px 15px; }}
 QPushButton#stop:hover {{ background: {danger_hover}; }}
+QPushButton#pass {{ background: {success}; color: white; border-color: {success}; font-weight: 700; }}
+QPushButton#pass:hover {{ background: {hover}; }}
+QPushButton#fail {{ background: {danger}; color: white; border-color: {danger}; font-weight: 700; }}
+QPushButton#fail:hover {{ background: {danger_hover}; }}
 QPushButton#start:disabled, QPushButton#primary:disabled, QPushButton#stop:disabled {{ background: {disabled}; color: {disabled_text}; border-color: {border}; }}
 QPushButton#link {{ color: {accent}; background: transparent; border: none; padding: 6px 4px; text-align: left; }}
 QPushButton#advanced_toggle {{ color: {accent}; background: {soft}; border: none; font-weight: 600; text-align: left; padding: 10px 12px; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextBrowser {{ color: {text}; background: {input}; border: 1px solid {border}; border-radius: 5px; padding: 7px; selection-background-color: {accent}; selection-color: white; }}
 QLineEdit#scene_name {{ font-size: 16px; font-weight: 600; padding: 9px; }}
+QComboBox#quick_scene {{ font-size: 16px; font-weight: 700; color: {accent}; padding: 10px 28px 10px 11px; }}
 QLineEdit#filter_preview {{ color: {muted}; background: {soft}; font-size: 12px; padding: 6px; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {accent}; }}
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{ color: {disabled_text}; background: {disabled}; }}
@@ -64,7 +95,7 @@ QListWidget::item {{ padding: 11px 9px; margin: 3px 0; border: 1px solid transpa
 QListWidget::item:selected {{ color: {accent}; background: {selected}; border-color: {border}; }}
 QListWidget::item:hover {{ background: {soft}; }}
 QCheckBox::indicator {{ width: 17px; height: 17px; border: 1px solid {muted}; border-radius: 4px; background: {input}; }}
-QCheckBox::indicator:checked {{ background: {accent}; border: 3px solid {selected}; }}
+QCheckBox::indicator:checked {{ background: {accent}; border: 1px solid {accent}; image: url("{check_icon}"); }}
 QScrollArea {{ border: none; background: {bg}; }}
 QWidget#scroll_content, QWidget#settings {{ background: {bg}; }}
 QScrollBar:vertical {{ width: 8px; background: transparent; }}
